@@ -19,4 +19,4 @@ def evalStr(rnn, str):
         pred = torch.round(torch.sigmoid(rnn(text.unsqueeze(-1)))).item()
         print('prediction :', 'negative' if pred == 0.0 else 'positive')
 
-evalStr(rnn, "It's ")
+evalStr(rnn, "I was extremely amused at the contents of this movie.")
