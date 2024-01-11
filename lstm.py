@@ -38,11 +38,12 @@ vocab.set_default_index(0)
 embedding_dim = 100
 hidden_dim = 256
 
-text_transform = lambda x: [vocab['<bos>']] + [vocab[token] for token in tokenizer(x)] + [vocab['<eos>']]
+text_transform = lambda x: [vocab[token] for token in tokenizer(x)]
+label_transform = lambda x: 1 if x == 2 else 0 # 1 neg 2 pos => pos 1 neg 0
 
 # Print out the output of text_transform
-print("input to the text_transform:", "here is an example")
-print("output of the text_transform:", text_transform("here is an example"))
+# print("input to the text_transform:", "here is an example")
+# print("output of the text_transform:", text_transform("here is an example"))
 
 # word2vec, glove
 # TEXT.build_vocab(train_data, max_size=10000, vectors='glove.6B.100d')
@@ -52,17 +53,19 @@ batchsz = 30
 def collate_batch(batch):
    label_list, text_list = [], []
    for (_label, _text) in batch:
-        label_list.append(_label)
+        label_list.append(label_transform(_label))
         processed_text = torch.tensor(text_transform(_text))
         text_list.append(processed_text)
-   return torch.tensor(label_list), pad_sequence(text_list)
+   return torch.tensor(label_list).type(torch.float32), pad_sequence(text_list)
 
 train_dataloader = torch.utils.data.DataLoader(list(train_data), batchsz, shuffle=True,
                               collate_fn=collate_batch)
 
+test_dataloader = torch.utils.data.DataLoader(list(test_data), batchsz, shuffle=True,
+                              collate_fn=collate_batch)
 
 
-device = torch.device('cpu')
+device = torch.device('mps')
 
 class RNN(nn.Module):
     
@@ -160,14 +163,15 @@ def eval(rnn, iterator, criteon):
     
     with torch.no_grad():
         for batch in iterator:
-
+            text = batch[1].to(device)
+            label = batch[0].to(device)
             # [b, 1] => [b]
-            pred = rnn(batch.text).squeeze(1)
+            pred = rnn(text).squeeze(1)
 
             #
-            loss = criteon(pred, batch.label)
+            # loss = criteon(pred, batch.label)
 
-            acc = binary_acc(pred, batch.label).item()
+            acc = binary_acc(pred, label).item()
             avg_acc.append(acc)
         
     avg_acc = np.array(avg_acc).mean()
@@ -176,5 +180,5 @@ def eval(rnn, iterator, criteon):
 
 for epoch in range(10):
     
-    # eval(rnn, test_data, criteon)
+    eval(rnn, test_dataloader, criteon)
     train(rnn, train_dataloader, optimizer, criteon)
