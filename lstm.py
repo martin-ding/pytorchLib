@@ -21,35 +21,6 @@ from torch.nn.utils.rnn import pad_sequence
 from torchtext.vocab import GloVe, vocab, Vocab
 from collections import Counter
 
-
-# print('GPU:', torch.cuda.is_available())
-SPECIAL_SYMBOLS = ['<unk>', '<pad>', '<bos>', '<eos>']
-torch.manual_seed(123)
-tokenizer = get_tokenizer('spacy',language= 'en_core_web_sm')
-train_data, test_data = datasets.IMDB(split=('train', 'test'))
-
-counter = Counter()
-for (label, line) in train_data:
-    counter.update(tokenizer(line))
-
-vocab = vocab(counter, min_freq=10, specials=SPECIAL_SYMBOLS, )
-vocab.set_default_index(0)
-
-embedding_dim = 100
-hidden_dim = 256
-
-text_transform = lambda x: [vocab[token] for token in tokenizer(x)]
-label_transform = lambda x: 1 if x == 2 else 0 # 1 neg 2 pos => pos 1 neg 0
-
-# Print out the output of text_transform
-# print("input to the text_transform:", "here is an example")
-# print("output of the text_transform:", text_transform("here is an example"))
-
-# word2vec, glove
-# TEXT.build_vocab(train_data, max_size=10000, vectors='glove.6B.100d')
-# LABEL.build_vocab(train_data)
-
-batchsz = 30
 def collate_batch(batch):
    label_list, text_list = [], []
    for (_label, _text) in batch:
@@ -58,64 +29,43 @@ def collate_batch(batch):
         text_list.append(processed_text)
    return torch.tensor(label_list).type(torch.float32), pad_sequence(text_list)
 
-train_dataloader = torch.utils.data.DataLoader(list(train_data), batchsz, shuffle=True,
-                              collate_fn=collate_batch)
-
-test_dataloader = torch.utils.data.DataLoader(list(test_data), batchsz, shuffle=True,
-                              collate_fn=collate_batch)
-
-
-device = torch.device('mps')
-
 class RNN(nn.Module):
-    
+
     def __init__(self, vocab_size, embedding_dim, hidden_dim):
         """
         """
         super(RNN, self).__init__()
-        
+
         # [0-10001] => [100]
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
         # [100] => [256]
-        self.rnn = nn.LSTM(embedding_dim, hidden_dim, num_layers=2, 
+        self.rnn = nn.LSTM(embedding_dim, hidden_dim, num_layers=2,
                            bidirectional=True, dropout=0.5)
         # [256*2] => [1]
         self.fc = nn.Linear(hidden_dim*2, 1)
         self.dropout = nn.Dropout(0.5)
-        
-        
+
+
     def forward(self, x):
         """
         x: [seq_len, b] vs [b, 3, 28, 28]
         """
         # [seq, b, 1] => [seq, b, 100]
         embedding = self.dropout(self.embedding(x))
-        
+
         # output: [seq, b, hid_dim*2]
         # hidden/h: [num_layers*2, b, hid_dim]
         # cell/c: [num_layers*2, b, hid_di]
         output, (hidden, cell) = self.rnn(embedding)
-        
+
         # [num_layers*2, b, hid_dim] => 2 of [b, hid_dim] => [b, hid_dim*2]
         hidden = torch.cat([hidden[-2], hidden[-1]], dim=1)
-        
+
         # [b, hid_dim*2] => [b, 1]
         hidden = self.dropout(hidden)
         out = self.fc(hidden)
-        
+
         return out
-
-rnn = RNN(len(vocab), embedding_dim, hidden_dim)
-
-golve = GloVe("6B", dim=embedding_dim)
-pretrained_embedding = golve.get_vecs_by_tokens(vocab.get_itos())
-print('pretrained_embedding:', pretrained_embedding.shape)
-rnn.embedding.weight.data.copy_(pretrained_embedding)
-print('embedding layer inited.')
-
-optimizer = optim.Adam(rnn.parameters(), lr=1e-3)
-criteon = nn.BCEWithLogitsLoss().to(device)
-rnn.to(device)
 
 import numpy as np
 
@@ -129,12 +79,12 @@ def binary_acc(preds, y):
     return acc
 
 def train(rnn, iterator, optimizer, criteon):
-    
+
     avg_acc = []
     rnn.train()
-    
+
     for i, batch in enumerate(iterator):
-        
+
         # [seq, b] => [b, 1] => [b]
         text = batch[1].to(device)
         label = batch[0].to(device)
@@ -143,24 +93,23 @@ def train(rnn, iterator, optimizer, criteon):
         loss = criteon(pred, label)
         acc = binary_acc(pred, label).item()
         avg_acc.append(acc)
-        
+
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
-        
+
         if i%10 == 0:
             print(i, acc)
-        
+
     avg_acc = np.array(avg_acc).mean()
     print('avg acc:', avg_acc)
-    
-    
+
 def eval(rnn, iterator, criteon):
-    
+
     avg_acc = []
-    
+
     rnn.eval()
-    
+
     with torch.no_grad():
         for batch in iterator:
             text = batch[1].to(device)
@@ -173,12 +122,68 @@ def eval(rnn, iterator, criteon):
 
             acc = binary_acc(pred, label).item()
             avg_acc.append(acc)
-        
+
     avg_acc = np.array(avg_acc).mean()
-    
+
     print('>>test:', avg_acc)
 
-for epoch in range(10):
-    
-    eval(rnn, test_dataloader, criteon)
-    train(rnn, train_dataloader, optimizer, criteon)
+
+def save_vocab(vocab, path):
+    with open(path, 'w+') as f:
+        for token, index in vocab.get_stoi().items():
+            f.write(f'{index}||{token}\n')
+def read_vocab(path):
+    vocab = dict()
+    with open(path, 'r') as f:
+        for line in f:
+            index, token = line.split('||')
+            vocab[token[:-1]] = int(index)
+    return vocab
+
+if __name__ == '__main__':
+    device = torch.device('mps')
+    # print('GPU:', torch.cuda.is_available())
+    SPECIAL_SYMBOLS = ['<unk>', '<pad>', '<bos>', '<eos>']
+    torch.manual_seed(123)
+
+    tokenizer = get_tokenizer('spacy', language='en_core_web_sm')
+    text_transform = lambda x: [vocab[token] for token in tokenizer(x)]
+    label_transform = lambda x: 1 if x == 2 else 0  # 1 neg 2 pos => pos 1 neg 0
+
+    train_data, test_data = datasets.IMDB(split=('train', 'test'))
+
+    counter = Counter()
+    for (label, line) in train_data:
+        counter.update(tokenizer(line))
+
+    vocab = vocab(counter, min_freq=10, specials=SPECIAL_SYMBOLS)
+    vocab.set_default_index(0)
+    save_vocab(vocab, 'vocab.txt')
+    print("----vocab saved----")
+    embedding_dim = 100
+    hidden_dim = 256
+
+
+
+    batchsz = 30
+    train_dataloader = torch.utils.data.DataLoader(list(train_data), batchsz, shuffle=True,
+                                                   collate_fn=collate_batch)
+
+    test_dataloader = torch.utils.data.DataLoader(list(test_data), batchsz, shuffle=True,
+                                                  collate_fn=collate_batch)
+
+    rnn = RNN(len(vocab), embedding_dim, hidden_dim)
+
+    golve = GloVe("6B", dim=embedding_dim)
+    pretrained_embedding = golve.get_vecs_by_tokens(vocab.get_itos())
+    print('pretrained_embedding:', pretrained_embedding.shape)
+    rnn.embedding.weight.data.copy_(pretrained_embedding)
+    print('embedding layer inited.')
+
+    optimizer = optim.Adam(rnn.parameters(), lr=1e-3)
+    criteon = nn.BCEWithLogitsLoss().to(device)
+    rnn.to(device)
+
+    for epoch in range(10):
+        eval(rnn, test_dataloader, criteon)
+        train(rnn, train_dataloader, optimizer, criteon)
