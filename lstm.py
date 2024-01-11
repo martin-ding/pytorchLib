@@ -18,7 +18,8 @@ from torch import nn, optim
 from torchtext.data.utils import get_tokenizer
 from torchtext import datasets
 from torch.nn.utils.rnn import pad_sequence
-from torchtext.vocab import GloVe
+from torchtext.vocab import GloVe, vocab, Vocab
+from collections import Counter
 
 
 # print('GPU:', torch.cuda.is_available())
@@ -27,18 +28,17 @@ torch.manual_seed(123)
 tokenizer = get_tokenizer('spacy',language= 'en_core_web_sm')
 train_data, test_data = datasets.IMDB(split=('train', 'test'))
 
-# counter = Counter()
-# a = 0
-# for (label, line) in train_data:
-#     a= a+1
-#     if a > 10: break
-#     counter.update(tokenizer(line))
-# vocab = vocab(counter, min_freq=10, specials=SPECIAL_SYMBOLS)
+counter = Counter()
+for (label, line) in train_data:
+    counter.update(tokenizer(line))
 
-golve = GloVe("6B")
+vocab = vocab(counter, min_freq=10, specials=SPECIAL_SYMBOLS, )
+vocab.set_default_index(0)
 
-text_transform = lambda x: [golve['<bos>']] + [golve[token] for token in tokenizer(x)] + [golve['<eos>']]
-label_transform = lambda x: 1 if x == 'pos' else 0
+embedding_dim = 100
+hidden_dim = 256
+
+text_transform = lambda x: [vocab['<bos>']] + [vocab[token] for token in tokenizer(x)] + [vocab['<eos>']]
 
 # Print out the output of text_transform
 print("input to the text_transform:", "here is an example")
@@ -52,17 +52,17 @@ batchsz = 30
 def collate_batch(batch):
    label_list, text_list = [], []
    for (_label, _text) in batch:
-        label_list.append(label_transform(_label))
+        label_list.append(_label)
         processed_text = torch.tensor(text_transform(_text))
         text_list.append(processed_text)
-   return torch.tensor(label_list), pad_sequence(text_list, padding_value=3.0)
+   return torch.tensor(label_list), pad_sequence(text_list)
 
 train_dataloader = torch.utils.data.DataLoader(list(train_data), batchsz, shuffle=True,
                               collate_fn=collate_batch)
 
 
 
-device = torch.device('mps')
+device = torch.device('cpu')
 
 class RNN(nn.Module):
     
@@ -102,9 +102,10 @@ class RNN(nn.Module):
         
         return out
 
-rnn = RNN(len(TEXT.vocab), 100, 256)
+rnn = RNN(len(vocab), embedding_dim, hidden_dim)
 
-pretrained_embedding = TEXT.vocab.vectors
+golve = GloVe("6B", dim=embedding_dim)
+pretrained_embedding = golve.get_vecs_by_tokens(vocab.get_itos())
 print('pretrained_embedding:', pretrained_embedding.shape)
 rnn.embedding.weight.data.copy_(pretrained_embedding)
 print('embedding layer inited.')
@@ -132,10 +133,12 @@ def train(rnn, iterator, optimizer, criteon):
     for i, batch in enumerate(iterator):
         
         # [seq, b] => [b, 1] => [b]
-        pred = rnn(batch.text).squeeze(1)
+        text = batch[1].to(device)
+        label = batch[0].to(device)
+        pred = rnn(text).squeeze(1)
         # 
-        loss = criteon(pred, batch.label)
-        acc = binary_acc(pred, batch.label).item()
+        loss = criteon(pred, label)
+        acc = binary_acc(pred, label).item()
         avg_acc.append(acc)
         
         optimizer.zero_grad()
@@ -173,5 +176,5 @@ def eval(rnn, iterator, criteon):
 
 for epoch in range(10):
     
-    eval(rnn, test_iterator, criteon)
-    train(rnn, train_iterator, optimizer, criteon)
+    # eval(rnn, test_data, criteon)
+    train(rnn, train_dataloader, optimizer, criteon)
